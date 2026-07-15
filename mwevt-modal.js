@@ -23,6 +23,16 @@
 (function () {
     "use strict";
 
+    var LOG_PREFIX = "[Event Registration Modal]";
+
+    function log(message) {
+        console.log(LOG_PREFIX + " " + message);
+    }
+
+    function logError(message) {
+        console.error(LOG_PREFIX + " " + message);
+    }
+
     // ------------------------------------------------------------
     // 1. Read the event ID from this script tag's data attribute
     // ------------------------------------------------------------
@@ -33,9 +43,11 @@
         : null;
 
     if (!EVENT_ID) {
-        console.error("[mwevt-modal] Missing required data-event-id attribute on the script tag. Modal will not be initialized.");
+        logError("Required event identifier was not provided. Initialization aborted.");
         return;
     }
+
+    log("Module initialized for event ID " + EVENT_ID + ".");
 
     var TYPEFORM_BASE   = "https://vxolsyg2q32.typeform.com/to/TqaCQY0J";
     var TYPEFORM_SOURCE = "mattweaverteamevents.com";
@@ -69,21 +81,30 @@
         if (!iframeEl) return; // DOM not ready yet — will retry once it is
 
         iframePreloaded = true;
+        log("Loading registration form in the background.");
         iframeEl.src = iframeEl.dataset.src;
     }
+
+    log("Checking event availability.");
 
     var eventCheckPromise = fetch(EVENT_API_URL, { cache: "no-store" })
         .then(function (res) {
             if (!res.ok) {
                 eventAvailable = false;
+                logError("Event availability check returned an unsuccessful response (status " + res.status + "). Treating event as unavailable.");
                 return;
             }
             return res.json().then(function (data) {
                 eventAvailable = !!(data && data.status === "available");
+                log("Event availability confirmed: " + (eventAvailable ? "available." : "fully booked."));
+            }).catch(function () {
+                eventAvailable = false;
+                logError("Event availability response could not be interpreted. Treating event as unavailable.");
             });
         })
-        .catch(function () {
+        .catch(function (err) {
             eventAvailable = false;
+            logError("Event availability check failed to complete (" + (err && err.message ? err.message : "network error") + "). Treating event as unavailable.");
         });
 
     // ------------------------------------------------------------
@@ -139,6 +160,7 @@
     // Append once DOM is ready
     function appendRoot() {
         document.body.appendChild(root);
+        log("Modal structure added to the page.");
         init();
     }
 
@@ -182,6 +204,7 @@
             clearLoadTimers();
 
             showFallbackTimer = setTimeout(function () {
+                log("Registration form load is taking longer than expected. Displaying alternate access link.");
                 fallbackLink.classList.remove("mwevt-hidden");
             }, FALLBACK_LINK_DELAY);
 
@@ -189,12 +212,14 @@
                 // The iframe's "load" event never fired, but in
                 // practice the form is very often already usable —
                 // stop blocking on it and reveal what's there.
+                logError("Registration form load confirmation not received within the expected time. Displaying form regardless.");
                 iframe.classList.add("mwevt-loaded");
                 loader.classList.add("mwevt-hidden");
             }, FORCE_REVEAL_DELAY);
         }
 
         function openModal() {
+            log("Modal opened.");
             document.body.classList.add("mwevt-lock");
             fallbackLink.classList.add("mwevt-hidden");
 
@@ -204,6 +229,7 @@
                 if (iframe.classList.contains("mwevt-loaded")) {
                     // Already finished loading from a previous open —
                     // reveal it immediately, no loader, no timers.
+                    log("Registration form already loaded. Displaying immediately.");
                     loader.classList.add("mwevt-hidden");
                     return;
                 }
@@ -213,14 +239,17 @@
                 if (iframePreloaded) {
                     // Preloading in progress but not finished yet —
                     // start the recovery timers in case it's stuck.
+                    log("Registration form still loading. Awaiting completion.");
                     startLoadTimers();
                 } else {
+                    log("Registration form load was not yet initiated. Initiating now.");
                     tryPreloadIframe();
                     startLoadTimers();
                 }
             }
 
             function showFullyBooked() {
+                log("Event is fully booked. Displaying notice.");
                 loader.classList.add("mwevt-hidden");
                 fullMsg.style.display = "flex";
             }
@@ -229,6 +258,7 @@
                 modal.classList.add("mwevt-show");
                 loader.classList.remove("mwevt-hidden");
                 fullMsg.style.display = "none";
+                log("Event availability check still in progress. Waiting for result.");
 
                 eventCheckPromise.then(function () {
                     if (eventAvailable) {
@@ -250,6 +280,7 @@
         }
 
         function closeModal() {
+            log("Modal closed.");
             modal.classList.remove("mwevt-show");
             document.body.classList.remove("mwevt-lock");
             clearLoadTimers();
@@ -257,12 +288,20 @@
 
         // Hide loader once iframe has actually loaded
         iframe.addEventListener("load", function () {
+            log("Registration form loaded successfully.");
             clearLoadTimers();
             fallbackLink.classList.add("mwevt-hidden");
             iframe.classList.add("mwevt-loaded");
             setTimeout(function () {
                 loader.classList.add("mwevt-hidden");
             }, 250);
+        });
+
+        // Log if the iframe itself fails to load (blocked, network
+        // failure, etc.) — the timeout-based fallback below will
+        // still recover the UI, but this records the underlying cause.
+        iframe.addEventListener("error", function () {
+            logError("Registration form failed to load due to a network or embedding error.");
         });
 
         // Close button
