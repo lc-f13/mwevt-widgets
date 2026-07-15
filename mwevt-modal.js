@@ -46,12 +46,19 @@
     var EVENT_API_URL = "https://rain13-api.onrender.com/api/events/" + encodeURIComponent(EVENT_ID);
 
     // ------------------------------------------------------------
-    // Shared state + the availability check itself starts firing
-    // RIGHT NOW, as soon as this script executes — it does not
-    // wait for DOMContentLoaded or the page to finish loading,
-    // since a fetch() call doesn't need the DOM at all. This way
-    // the check (and the iframe preload once it resolves) is as
-    // far along as possible by the time the visitor clicks.
+    // Shared state. The Typeform iframe is preloaded UNCONDITIONALLY
+    // as soon as the DOM is ready — it does not wait for the
+    // availability check to resolve, and does not wait for the
+    // modal to be opened. This means the form is already loading
+    // quietly in the background from the moment the page loads,
+    // so by the time someone clicks the trigger button, it's often
+    // already loaded (no "Initializing..." wait).
+    //
+    // The availability check (below) runs in parallel and is only
+    // used to decide what to SHOW when the modal opens — the
+    // already-loading form, or the "Fully Booked" message. If the
+    // event turns out to be fully booked, the form still loaded in
+    // the background, it's just never revealed.
     // ------------------------------------------------------------
     var eventAvailable   = null;
     var iframeEl         = null; // set once the DOM is ready
@@ -59,7 +66,6 @@
 
     function tryPreloadIframe() {
         if (iframePreloaded) return;
-        if (!eventAvailable) return;
         if (!iframeEl) return; // DOM not ready yet — will retry once it is
 
         iframePreloaded = true;
@@ -78,9 +84,6 @@
         })
         .catch(function () {
             eventAvailable = false;
-        })
-        .then(function () {
-            tryPreloadIframe();
         });
 
     // ------------------------------------------------------------
