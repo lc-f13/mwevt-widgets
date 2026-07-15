@@ -46,6 +46,44 @@
     var EVENT_API_URL = "https://rain13-api.onrender.com/api/events/" + encodeURIComponent(EVENT_ID);
 
     // ------------------------------------------------------------
+    // Shared state + the availability check itself starts firing
+    // RIGHT NOW, as soon as this script executes — it does not
+    // wait for DOMContentLoaded or the page to finish loading,
+    // since a fetch() call doesn't need the DOM at all. This way
+    // the check (and the iframe preload once it resolves) is as
+    // far along as possible by the time the visitor clicks.
+    // ------------------------------------------------------------
+    var eventAvailable   = null;
+    var iframeEl         = null; // set once the DOM is ready
+    var iframePreloaded  = false;
+
+    function tryPreloadIframe() {
+        if (iframePreloaded) return;
+        if (!eventAvailable) return;
+        if (!iframeEl) return; // DOM not ready yet — will retry once it is
+
+        iframePreloaded = true;
+        iframeEl.src = iframeEl.dataset.src;
+    }
+
+    var eventCheckPromise = fetch(EVENT_API_URL, { cache: "no-store" })
+        .then(function (res) {
+            if (!res.ok) {
+                eventAvailable = false;
+                return;
+            }
+            return res.json().then(function (data) {
+                eventAvailable = !!(data && data.status === "available");
+            });
+        })
+        .catch(function () {
+            eventAvailable = false;
+        })
+        .then(function () {
+            tryPreloadIframe();
+        });
+
+    // ------------------------------------------------------------
     // 2. Inject scoped CSS (prefixed, won't collide with theme)
     // ------------------------------------------------------------
     var style = document.createElement("style");
@@ -63,6 +101,8 @@
         + "#mwevt-root .mwevt-full{position:absolute;inset:0;display:flex;justify-content:center;align-items:center;background:#fff;z-index:25;padding:24px;text-align:center;color:#333;font-family:Arial,sans-serif;}"
         + "#mwevt-root .mwevt-full h3{margin:0 0 8px 0;}"
         + "#mwevt-root .mwevt-full p{margin:0;}"
+        + "#mwevt-root .mwevt-fallback-link{position:absolute;left:0;right:0;bottom:16px;margin:0 auto;width:max-content;max-width:90%;text-align:center;background:#fff;color:#333;font-family:Arial,sans-serif;font-size:14px;text-decoration:underline;padding:8px 14px;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);z-index:30;}"
+        + "#mwevt-root .mwevt-fallback-link.mwevt-hidden{display:none;}"
         + "body.mwevt-lock{overflow:hidden;}";
     document.head.appendChild(style);
 
@@ -84,7 +124,10 @@
         +         '<p>We\'re sorry — this event is fully booked.</p>'
         +       '</div>'
         +     '</div>'
-        +     '<iframe id="mwevt-iframe" class="mwevt-iframe" loading="lazy" '
+        +     '<a href="' + TYPEFORM_URL + '" target="_blank" rel="noopener" class="mwevt-fallback-link mwevt-hidden" id="mwevt-fallback-link">'
+        +       'Taking longer than expected — open the form in a new tab'
+        +     '</a>'
+        +     '<iframe id="mwevt-iframe" class="mwevt-iframe" '
         +       'allow="camera; microphone; fullscreen" '
         +       'data-src="' + TYPEFORM_URL + '"></iframe>'
         +   '</div>'
@@ -106,58 +149,87 @@
     // 4. Behavior
     // ------------------------------------------------------------
     function init() {
-        var modal     = document.getElementById("mwevt-modal");
-        var iframe    = document.getElementById("mwevt-iframe");
-        var loader    = document.getElementById("mwevt-loader");
-        var fullMsg   = document.getElementById("mwevt-full");
-        var closeBtn  = document.getElementById("mwevt-close");
+        var modal         = document.getElementById("mwevt-modal");
+        var iframe         = document.getElementById("mwevt-iframe");
+        var loader         = document.getElementById("mwevt-loader");
+        var fullMsg        = document.getElementById("mwevt-full");
+        var closeBtn       = document.getElementById("mwevt-close");
+        var fallbackLink   = document.getElementById("mwevt-fallback-link");
 
-        var initialized    = false;
-        var eventAvailable = null;
+        iframeEl = iframe; // now that the DOM exists, hook it into the shared state
 
-        function preloadIframe() {
-            if (initialized) return;
-            if (!eventAvailable) return;
+        // If the availability check already resolved (or resolves
+        // shortly) before the modal DOM was ready, this makes sure
+        // the iframe still gets preloaded once both are ready.
+        tryPreloadIframe();
 
-            initialized = true;
-            iframe.src = iframe.dataset.src;
+        // Timers used to detect a "stuck" load and recover from it
+        var showFallbackTimer = null; // shows the "open in new tab" link
+        var forceRevealTimer  = null; // stops waiting on the load event
+
+        var FALLBACK_LINK_DELAY = 6000;  // 6s: offer the new-tab link
+        var FORCE_REVEAL_DELAY  = 14000; // 14s: stop waiting, show iframe anyway
+
+        function clearLoadTimers() {
+            if (showFallbackTimer) { clearTimeout(showFallbackTimer); showFallbackTimer = null; }
+            if (forceRevealTimer)  { clearTimeout(forceRevealTimer);  forceRevealTimer  = null; }
         }
 
-        function checkEvent() {
-            return fetch(EVENT_API_URL, { cache: "no-store" })
-                .then(function (res) {
-                    if (!res.ok) {
-                        eventAvailable = false;
-                        return;
-                    }
-                    return res.json().then(function (data) {
-                        eventAvailable = !!(data && data.status === "available");
-                    });
-                })
-                .catch(function () {
-                    eventAvailable = false;
-                })
-                .then(function () {
-                    if (eventAvailable) preloadIframe();
-                });
+        function startLoadTimers() {
+            clearLoadTimers();
+
+            showFallbackTimer = setTimeout(function () {
+                fallbackLink.classList.remove("mwevt-hidden");
+            }, FALLBACK_LINK_DELAY);
+
+            forceRevealTimer = setTimeout(function () {
+                // The iframe's "load" event never fired, but in
+                // practice the form is very often already usable —
+                // stop blocking on it and reveal what's there.
+                iframe.classList.add("mwevt-loaded");
+                loader.classList.add("mwevt-hidden");
+            }, FORCE_REVEAL_DELAY);
         }
 
         function openModal() {
             document.body.classList.add("mwevt-lock");
+            fallbackLink.classList.add("mwevt-hidden");
+
+            function showAvailable() {
+                fullMsg.style.display = "none";
+                loader.classList.remove("mwevt-hidden");
+
+                if (iframePreloaded) {
+                    // Already preloaded in the background (likely,
+                    // since the check started the instant the page
+                    // began loading) — if it already finished, the
+                    // "load" listener below will have hidden the
+                    // loader already; if not, start the recovery
+                    // timers in case it's stuck.
+                    if (!iframe.classList.contains("mwevt-loaded")) {
+                        startLoadTimers();
+                    }
+                } else {
+                    tryPreloadIframe();
+                    startLoadTimers();
+                }
+            }
+
+            function showFullyBooked() {
+                loader.classList.add("mwevt-hidden");
+                fullMsg.style.display = "flex";
+            }
 
             if (eventAvailable === null) {
                 modal.classList.add("mwevt-show");
                 loader.classList.remove("mwevt-hidden");
                 fullMsg.style.display = "none";
 
-                checkEvent().then(function () {
+                eventCheckPromise.then(function () {
                     if (eventAvailable) {
-                        fullMsg.style.display = "none";
-                        loader.classList.remove("mwevt-hidden");
-                        preloadIframe();
+                        showAvailable();
                     } else {
-                        loader.classList.add("mwevt-hidden");
-                        fullMsg.style.display = "flex";
+                        showFullyBooked();
                     }
                 });
                 return;
@@ -166,22 +238,22 @@
             modal.classList.add("mwevt-show");
 
             if (eventAvailable) {
-                fullMsg.style.display = "none";
-                loader.classList.remove("mwevt-hidden");
-                preloadIframe();
+                showAvailable();
             } else {
-                loader.classList.add("mwevt-hidden");
-                fullMsg.style.display = "flex";
+                showFullyBooked();
             }
         }
 
         function closeModal() {
             modal.classList.remove("mwevt-show");
             document.body.classList.remove("mwevt-lock");
+            clearLoadTimers();
         }
 
-        // Hide loader once iframe has loaded
+        // Hide loader once iframe has actually loaded
         iframe.addEventListener("load", function () {
+            clearLoadTimers();
+            fallbackLink.classList.add("mwevt-hidden");
             iframe.classList.add("mwevt-loaded");
             setTimeout(function () {
                 loader.classList.add("mwevt-hidden");
@@ -213,25 +285,22 @@
 
         // Preload on intent (hover / touch / focus of a trigger)
         document.addEventListener("mouseenter", function (e) {
-            if (e.target.closest && e.target.closest(".mwevt-open") && eventAvailable) {
-                preloadIframe();
+            if (e.target.closest && e.target.closest(".mwevt-open")) {
+                tryPreloadIframe();
             }
         }, true);
 
         document.addEventListener("touchstart", function (e) {
-            if (e.target.closest && e.target.closest(".mwevt-open") && eventAvailable) {
-                preloadIframe();
+            if (e.target.closest && e.target.closest(".mwevt-open")) {
+                tryPreloadIframe();
             }
         }, true);
 
         document.addEventListener("focus", function (e) {
-            if (e.target.closest && e.target.closest(".mwevt-open") && eventAvailable) {
-                preloadIframe();
+            if (e.target.closest && e.target.closest(".mwevt-open")) {
+                tryPreloadIframe();
             }
         }, true);
-
-        // Kick off availability check right away
-        checkEvent();
     }
 
 })();
