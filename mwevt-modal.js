@@ -200,18 +200,20 @@
 
             function showAvailable() {
                 fullMsg.style.display = "none";
+
+                if (iframe.classList.contains("mwevt-loaded")) {
+                    // Already finished loading from a previous open —
+                    // reveal it immediately, no loader, no timers.
+                    loader.classList.add("mwevt-hidden");
+                    return;
+                }
+
                 loader.classList.remove("mwevt-hidden");
 
                 if (iframePreloaded) {
-                    // Already preloaded in the background (likely,
-                    // since the check started the instant the page
-                    // began loading) — if it already finished, the
-                    // "load" listener below will have hidden the
-                    // loader already; if not, start the recovery
-                    // timers in case it's stuck.
-                    if (!iframe.classList.contains("mwevt-loaded")) {
-                        startLoadTimers();
-                    }
+                    // Preloading in progress but not finished yet —
+                    // start the recovery timers in case it's stuck.
+                    startLoadTimers();
                 } else {
                     tryPreloadIframe();
                     startLoadTimers();
