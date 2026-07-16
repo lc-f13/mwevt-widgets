@@ -51,39 +51,74 @@
 
     var TYPEFORM_BASE   = "https://vxolsyg2q32.typeform.com/to/TqaCQY0J";
     var TYPEFORM_SOURCE = "mattweaverteamevents.com";
-    var TYPEFORM_URL    = TYPEFORM_BASE
-        + "?typeform-source=" + encodeURIComponent(TYPEFORM_SOURCE)
-        + "#event_form_id=" + encodeURIComponent(EVENT_ID);
+
+    function buildTypeformUrl(eventNameValue) {
+        var url = TYPEFORM_BASE + "?typeform-source=" + encodeURIComponent(TYPEFORM_SOURCE);
+        if (eventNameValue) {
+            url += "&event_name=" + encodeURIComponent(eventNameValue);
+        }
+        url += "#event_form_id=" + encodeURIComponent(EVENT_ID);
+        return url;
+    }
 
     var EVENT_API_URL = "https://rain13-api.onrender.com/api/events/" + encodeURIComponent(EVENT_ID);
 
     // ------------------------------------------------------------
     // Shared state. The Typeform iframe is preloaded UNCONDITIONALLY
-    // as soon as the DOM is ready — it does not wait for the
-    // availability check to resolve, and does not wait for the
-    // modal to be opened. This means the form is already loading
-    // quietly in the background from the moment the page loads,
-    // so by the time someone clicks the trigger button, it's often
-    // already loaded (no "Initializing..." wait).
+    // as soon as the DOM is ready — it does not wait for the modal
+    // to be opened. It DOES wait briefly for the event details
+    // response, so the event name can be included in the Typeform
+    // URL (as the event_name parameter) and rendered inside the
+    // form itself. If that response takes too long, a grace-period
+    // timeout allows the form to load anyway, without the name,
+    // rather than leaving the form stuck waiting indefinitely.
     //
-    // The availability check (below) runs in parallel and is only
-    // used to decide what to SHOW when the modal opens — the
-    // already-loading form, or the "Fully Booked" message. If the
-    // event turns out to be fully booked, the form still loaded in
-    // the background, it's just never revealed.
+    // The availability result is used separately to decide what to
+    // SHOW when the modal opens — the already-loading form, or the
+    // "Fully Booked" message. If the event turns out to be fully
+    // booked, the form still loaded in the background, it's just
+    // never revealed.
     // ------------------------------------------------------------
     var eventAvailable   = null;
+    var eventName        = null;
+    var eventDataReady   = false; // true once we've either got the API response or given up waiting for it
     var iframeEl         = null; // set once the DOM is ready
+    var fallbackLinkEl   = null; // set once the DOM is ready
     var iframePreloaded  = false;
+
+    var EVENT_NAME_WAIT_MS = 4000; // grace period to receive the event name before loading without it
 
     function tryPreloadIframe() {
         if (iframePreloaded) return;
-        if (!iframeEl) return; // DOM not ready yet — will retry once it is
+        if (!iframeEl) return;      // DOM not ready yet — will retry once it is
+        if (!eventDataReady) return; // still waiting on the event details response (or its timeout)
 
         iframePreloaded = true;
-        log("Loading registration form in the background.");
-        iframeEl.src = iframeEl.dataset.src;
+
+        var finalUrl = buildTypeformUrl(eventName);
+
+        if (eventName) {
+            log("Loading registration form in the background with event name \"" + eventName + "\".");
+        } else {
+            log("Loading registration form in the background without an event name.");
+        }
+
+        iframeEl.src = finalUrl;
+        if (fallbackLinkEl) {
+            fallbackLinkEl.href = finalUrl;
+        }
     }
+
+    function proceedWithPreload() {
+        if (eventDataReady) return;
+        eventDataReady = true;
+        tryPreloadIframe();
+    }
+
+    var nameWaitTimer = setTimeout(function () {
+        log("Event name was not received within the expected time. Proceeding without it.");
+        proceedWithPreload();
+    }, EVENT_NAME_WAIT_MS);
 
     log("Checking event availability.");
 
@@ -96,7 +131,9 @@
             }
             return res.json().then(function (data) {
                 eventAvailable = !!(data && data.status === "available");
-                log("Event availability confirmed: " + (eventAvailable ? "available." : "fully booked."));
+                eventName = (data && data.name) ? data.name : null;
+                log("Event availability confirmed: " + (eventAvailable ? "available." : "fully booked.")
+                    + (eventName ? " Event name: " + eventName + "." : " Event name was not provided by the API."));
             }).catch(function () {
                 eventAvailable = false;
                 logError("Event availability response could not be interpreted. Treating event as unavailable.");
@@ -105,6 +142,10 @@
         .catch(function (err) {
             eventAvailable = false;
             logError("Event availability check failed to complete (" + (err && err.message ? err.message : "network error") + "). Treating event as unavailable.");
+        })
+        .then(function () {
+            clearTimeout(nameWaitTimer);
+            proceedWithPreload();
         });
 
     // ------------------------------------------------------------
@@ -125,7 +166,9 @@
         + "#mwevt-root .mwevt-full{position:absolute;inset:0;display:flex;justify-content:center;align-items:center;background:#fff;z-index:25;padding:24px;text-align:center;color:#333;font-family:Arial,sans-serif;}"
         + "#mwevt-root .mwevt-full h3{margin:0 0 8px 0;}"
         + "#mwevt-root .mwevt-full p{margin:0;}"
-        + "#mwevt-root .mwevt-fallback-link{position:absolute;left:0;right:0;bottom:16px;margin:0 auto;width:max-content;max-width:90%;text-align:center;background:#fff;color:#333;font-family:Arial,sans-serif;font-size:14px;text-decoration:underline;padding:8px 14px;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);z-index:30;}"
+        + "#mwevt-root .mwevt-fallback-link{position:absolute;left:0;right:0;bottom:16px;margin:0 auto;width:max-content;max-width:88%;text-align:center;background:#fff;color:#333;font-family:Arial,sans-serif;padding:10px 16px;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);z-index:30;}"
+        + "#mwevt-root .mwevt-fallback-link p{margin:0;font-size:14px;line-height:1.4;}"
+        + "#mwevt-root .mwevt-fallback-link a{color:#635BFF;text-decoration:underline;}"
         + "#mwevt-root .mwevt-fallback-link.mwevt-hidden{display:none;}"
         + "body.mwevt-lock{overflow:hidden;}";
     document.head.appendChild(style);
@@ -145,15 +188,15 @@
         +     '<div class="mwevt-full" id="mwevt-full" style="display:none;">'
         +       '<div>'
         +         '<h3>Event Fully Booked</h3>'
-        +         '<p>We\'re sorry — this event is fully booked.</p>'
+        +         '<p>We\u2019re sorry, this luncheon is fully booked. Please check other upcoming luncheons for available seats.</p>'
         +       '</div>'
         +     '</div>'
-        +     '<a href="' + TYPEFORM_URL + '" target="_blank" rel="noopener" class="mwevt-fallback-link mwevt-hidden" id="mwevt-fallback-link">'
-        +       'Taking longer than expected — open the form in a new tab'
-        +     '</a>'
+        +     '<div class="mwevt-fallback-link mwevt-hidden" id="mwevt-fallback-link">'
+        +       '<p>This is taking longer than expected. You can wait a few more seconds, or '
+        +       '<a href="' + buildTypeformUrl(null) + '" target="_blank" rel="noopener" id="mwevt-fallback-anchor">open the form in a new tab</a>.</p>'
+        +     '</div>'
         +     '<iframe id="mwevt-iframe" class="mwevt-iframe" '
-        +       'allow="camera; microphone; fullscreen" '
-        +       'data-src="' + TYPEFORM_URL + '"></iframe>'
+        +       'allow="camera; microphone; fullscreen"></iframe>'
         +   '</div>'
         + '</div>';
 
@@ -180,12 +223,14 @@
         var fullMsg        = document.getElementById("mwevt-full");
         var closeBtn       = document.getElementById("mwevt-close");
         var fallbackLink   = document.getElementById("mwevt-fallback-link");
+        var fallbackAnchor = document.getElementById("mwevt-fallback-anchor");
 
         iframeEl = iframe; // now that the DOM exists, hook it into the shared state
+        fallbackLinkEl = fallbackAnchor;
 
-        // If the availability check already resolved (or resolves
-        // shortly) before the modal DOM was ready, this makes sure
-        // the iframe still gets preloaded once both are ready.
+        // If the event details already resolved (or resolve shortly)
+        // before the modal DOM was ready, this makes sure the iframe
+        // still gets preloaded once both are ready.
         tryPreloadIframe();
 
         // Timers used to detect a "stuck" load and recover from it
